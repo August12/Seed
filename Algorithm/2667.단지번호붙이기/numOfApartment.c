@@ -9,7 +9,7 @@ int dx[] = {-1, 1, 0, 0};
 int dy[] = {0, 0, 1, -1};
 int count = 0;
 
-void bfs(int y, int x) {
+void dfs(int y, int x) {
 	int i = 0;
 	int ny = 0;
 	int nx = 0;
