@@ -159,14 +159,14 @@ class anomaliesCommand(SimpleCommand):
                     pass
 
     def dfToPandas(self, df) :
-		data = df.toPandas()
-		data = data.set_index(self.index)
-		data.index = pd.to_datetime(data.index)
-		data = data.astype(float)
+        data = df.toPandas()
+    	data = data.set_index(self.index)
+        data = data.astype(float)
+    	data.index = pd.to_datetime(data.index)
 
-		return data
+    	return data
 
-    def basic(self, df) :
+    def basic(self, sqlCtx, df) :
     	'''
     	Detect anomalies using basic argorithm.
 
@@ -189,10 +189,17 @@ class anomaliesCommand(SimpleCommand):
 
         data.insert(len(data.columns),"upper",upper)
         data.insert(len(data.columns),"lower",lower)
+        data.reset_index(inplace = True)
+        data[self.index] = data[self.index].astype(str)
+        
+        anomaly = (data[self.target] > data['upper']) | (data[self.target] < data['lower'])
+        data.insert(len(data.columns),"anomaly",anomaly)
 
-        return data[(data[self.target] > upper) | (data[self.target] < lower)]
+        df = sqlCtx.createDataFrame(data)
 
-    def agile(self, df) :
+        return df
+
+    def agile(self, sqlCtx, df) :
     	'''
     	Detect anomailes using SARIMA model
 
@@ -208,33 +215,39 @@ class anomaliesCommand(SimpleCommand):
 
         data = self.dfToPandas(df)
 
-        mod_sarimax = sm.tsa.SARIMAX(data, order=(1,1,1),seasonal_order=(1,1,1,4))
+        mod_sarimax = sm.tsa.SARIMAX(data, order=(1,0,0),seasonal_order=(0,0,0,0),enforce_stationarity=False)
         res_sarimax = mod_sarimax.fit()
 
         N = len(data)
         pred_results = res_sarimax.predict(start=data.index.get_loc(data.index[0]),end=data.index.get_loc(data.index[N-1]))
-        print data
-        print pred_results
 
         pred_differences = data.value-pred_results
         pred_differences = abs(pred_differences)
 
-        ma5 = pred_differences.rolling(window=5,min_periods=1).mean()
-        stddev5 = pred_differences.rolling(window=5,min_periods=1).std()
-
-        confidence_interval_upper = ma5 + ((1.959964*stddev5*self.bound)/math.sqrt(5))
-        confidence_interval_lower = ma5 - ((1.959964*stddev5*self.bound)/math.sqrt(5))
+        ma = pred_differences.rolling(window=5,min_periods=1).mean()
+        all_std = pred_differences.std()
+        stddev = all_std/math.sqrt(5)
+        confidence = 1.959964 * stddev * float(self.bound)
+        upper = ma + confidence
+        lower = ma - confidence
 
         data.insert(len(data.columns), "predict", pred_results)
         data.insert(len(data.columns), "residuals", pred_differences)
-        data.insert(len(data.columns), "upper", confidence_interval_upper)
-        data.insert(len(data.columns), "lower", confidence_interval_lower)
+        data.insert(len(data.columns), "upper", upper)
+        data.insert(len(data.columns), "lower", lower)
+        data.reset_index(inplace = True)
+        data[self.index] = data[self.index].astype(str)
 
-        print(res_sarimax.summary())
+        anomaly = (data['residuals'] > data['upper']) | (data['residuals'] < data['lower'])
+        data.insert(len(data.columns),"anomaly",anomaly)
 
-        return data[(data['residuals'] > confidence_interval_upper) | (data['residuals'] < confidence_interval_lower)]
+        df = sqlCtx.createDataFrame(data)
 
-    def robust(self, df) :
+        # print(res_sarimax.summary())
+
+        return df
+
+    def robust(self, sqlCtx, df) :
     	'''
     	Detect anomailes using Seasonal Trend decomposition
 
@@ -247,26 +260,30 @@ class anomaliesCommand(SimpleCommand):
     	'''
 
     	data = self.dfToPandas(df)
-    	result = seasonal_decompose(data,model='multiplicative', freq=2)
-    	# print result.seasonal
+    	result = seasonal_decompose(data,freq=4,model='multiplicative')
     	# result.seasonal = math.log(result.seasonal['value'])
     	# print result.seasonal
     	resid = result.resid
 
-    	ma5 = resid.rolling(window=5,min_periods=1).mean()
-    	stddev5 = resid.rolling(window=5,min_periods=1).std()
-    	
-        confidence = 1.959964 * stddev5 * self.bound
-        print 'confidence' + str(confidence)
-    	upper = ma5 + (confidence/math.sqrt(5))
-    	lower = ma5 - (confidence/math.sqrt(5))
+    	ma = resid.rolling(window=5,min_periods=1).mean()
+    	all_std = resid.std()
+        stddev = all_std/math.sqrt(5)
+        confidence = 1.959964 * stddev * float(self.bound)
+        upper = ma + confidence
+        lower = ma - confidence
 
     	data.insert(len(data.columns), "residuals", resid)
-    	data.insert(len(data.columns), "upper", confidence_interval_upper)
-    	data.insert(len(data.columns), "lower", confidence_interval_lower)
+    	data.insert(len(data.columns), "upper", upper)
+    	data.insert(len(data.columns), "lower", lower)
+        data.reset_index(inplace = True)
+        data[self.index] = data[self.index].astype(str)
 
-    	return data[ (data['residuals'] > confidence_interval_upper['value']) |
-    				 (data['residuals'] < confidence_interval_lower['value']) ]
+        anomaly = (data['residuals'] > data['upper']) | (data['residuals'] < data['lower'])
+        data.insert(len(data.columns),"anomaly",anomaly)
+
+        df = sqlCtx.createDataFrame(data)
+
+    	return df
 
     def execute(self, sqlCtx, df=None, parsed_args=None, options=None):
         '''앞서 생성한 함수를 input data frame 에 적용합니다.
@@ -282,11 +299,11 @@ class anomaliesCommand(SimpleCommand):
         self.parsing_and_exception(parsed_args)
 
         if self.alg == "basic":
-            return self.basic(df)
+            return self.basic(sqlCtx, df)
         elif self.alg == "agile":
-            return self.agile(df)
+            return self.agile(sqlCtx, df)
         elif self.alg == "robust":
-            return self.robust(df)
+            return self.robust(sqlCtx, df)
         else:
             raise AngoraException(anomaliesCommand.EXCEPTION_01)
 
