@@ -282,6 +282,7 @@ class anomaliesCommand(SimpleCommand):
         data.insert(len(data.columns),"anomaly",anomaly)
 
         df = sqlCtx.createDataFrame(data)
+        df.show(df.count())
 
     	return df
 
