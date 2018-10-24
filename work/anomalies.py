@@ -1,6 +1,7 @@
 # coding=UTF-8
 from pyspark.sql import SparkSession
 from pyspark.sql import SQLContext
+from pyspark.sql.types import StructType, StructField, IntegerType, StringType
 from angora.cmds.base import SimpleCommand
 from angora.exceptions import AngoraException
 from ply import lex, yacc
@@ -10,31 +11,38 @@ import pandas as pd
 import statsmodels.api as sm
 from statsmodels.tsa.seasonal import seasonal_decompose
 import math
+import sys
 
 class anomaliesCommand(SimpleCommand):
 
     SUPPORT_MODE = ["basic", "agile", "robust"]
     EXCEPTION_01 = "We only support one of " + str(SUPPORT_MODE) + " anomaly algorithm."
+    EXCEPTION_05 = "Alert_winsize is out of dataframe size"
     
     class anomaliesLexer(object):
 
         tokens = (
             'WORD',
-            'DOUBLE',
+            'NUMBER',
             'EQUALS',
+            'DOT',
         )
 
         # Regular expression rules for simple tokens
         t_WORD = r'\w+'
         t_ignore = ' \t'
         t_EQUALS = r'\='
+        t_DOT = r'\.'
 
         def t_newline(self, t):
             r'\n+'
             t.lexer.lineno += len(t.value)
 
-        def t_DOUBLE(self, t):
+        def t_NUMBER(self, t):
             '[-+]?[0-9]+(\.([0-9]+)?([eE][-+]?[0-9]+)?|[eE][-+]?[0-9]+)'
+
+        # def t_DOUBLE(self, t):
+        #     '[+-]?(([1-9][0-9]*)|(0))([.,][0-9]+)?'
 
         def t_error(self, t):
             raise SyntaxError("Syntax error near '%s'" % t.value)
@@ -46,12 +54,12 @@ class anomaliesCommand(SimpleCommand):
     class anomaliesParser(object):
 
         EXCEPTION_PARSE = "eval has errors."
-        COUNT = 1
 
         tokens = (
             'WORD',
-            'DOUBLE',
+            'NUMBER',
             'EQUALS',
+            'DOT',
         )
 
         def p_anomalies_command(self, p):
@@ -82,16 +90,14 @@ class anomaliesCommand(SimpleCommand):
 
         def p_param(slef,p) :
             '''param : WORD EQUALS WORD
-                     | WORD EQUALS DOUBLE
+                     | WORD EQUALS NUMBER
+                     | WORD EQUALS NUMBER DOT NUMBER
                      '''
             if len(p) == 4:
-                if p[3].lower() =="true":
-                    p[3] = True
-                elif p[3].lower() =="false":
-                    p[3] = False
                 p[0] = [p[1],p[3]]
             else:
-                p[0] = [p[1],p[4]]
+                eprint ('asdfasdfasdfasdf')
+                p[0] = [p[1],p[3]+p[4]+p[5]]
 
         def p_error(self, p):
             if p is None:
@@ -114,7 +120,10 @@ class anomaliesCommand(SimpleCommand):
         self.bound = 2
         self.index = None
         self.target = None
+        self.direct = 'both'
+        self.window = 0.1
         self.parse_parameter = []
+        self.detection_sign = False
 
     def parse(self, raw_args, options=None):
         '''사용자로부터 입력받은 raw_args 를 Lex, yacc parser 로 문법에 맞게 반환한다.
@@ -139,7 +148,7 @@ class anomaliesCommand(SimpleCommand):
         if "index" in parsed_args:
             self.index = parsed_args['index']
         else:
-            raise AngoraException(anomaliesCommand.EXCEPTION_03)
+            raise AngoraException(anomaliesCommand.EXCEPTION_02)
 
         if "target" in parsed_args:
             self.target = parsed_args['target']
@@ -147,9 +156,15 @@ class anomaliesCommand(SimpleCommand):
             raise AngoraException(anomaliesCommand.EXCEPTION_03)
 
         self.parse_parameter = parsed_args['params']
-        par_list = ['alg', 'bound']
+        par_list = ['alg', 'bound', 'direct', 'window']
+        detect_list = ['direct', 'window']
 
         if self.parse_parameter != None:
+            for i in detect_list:
+                if i in self.parse_parameter:
+                    self.detection_sign = True
+                    break
+
             for i in par_list:
                 try:
                     if i in self.parse_parameter:
@@ -184,6 +199,19 @@ class anomaliesCommand(SimpleCommand):
         all_std = data[self.target].std()
         stddev = all_std/math.sqrt(5)
         confidence = 1.959964 * stddev * float(self.bound)
+
+        if self.detection_sign :
+            self.window = float(self.window)
+            if (self.window > 0) and (self.window <= 1):
+                alert_count = data.shape[0] * self.window
+            elif (self.window <= 0) or (self.window > data.shape[0]):
+                raise AngoraException(anomaliesCommand.EXCEPTION_05)
+            else :
+                alert_count = self.window
+            
+            ma = ma.iloc[int(data.shape[0]-alert_count):]
+            data = data.iloc[int(data.shape[0]-alert_count):]
+
         upper = ma + confidence
         lower = ma - confidence
 
@@ -191,11 +219,26 @@ class anomaliesCommand(SimpleCommand):
         data.insert(len(data.columns),"lower",lower)
         data.reset_index(inplace = True)
         data[self.index] = data[self.index].astype(str)
+
+        if self.direct == 'below':
+            anomaly = data[self.target] < data['lower']
+        elif self.direct == 'above':
+            anomaly = data[self.target] > data['upper']
+        else:
+            anomaly = (data[self.target] > data['upper']) | (data[self.target] < data['lower'])
         
-        anomaly = (data[self.target] > data['upper']) | (data[self.target] < data['lower'])
         data.insert(len(data.columns),"anomaly",anomaly)
 
-        df = sqlCtx.createDataFrame(data)
+        try:
+            df = sqlCtx.createDataFrame(data)
+        except:
+            schema = StructType([ 
+                StructField("time", DoubleType(), nullable=False),
+                StructField("value", DoubleType(), nullable=False),
+                StructField("upper", DoubleType(), nullable=False),
+                StructField("lower", DoubleType(), nullable=False),
+                StructField("anomaly", DoubleType(), nullable=False),])
+            df = sqlCtx.createDataFrame(data,schema)
 
         return df
 
@@ -228,6 +271,18 @@ class anomaliesCommand(SimpleCommand):
         all_std = pred_differences.std()
         stddev = all_std/math.sqrt(5)
         confidence = 1.959964 * stddev * float(self.bound)
+
+        if self.detection_sign :
+            self.window = float(self.window)
+            if (self.window > 0) and (self.window <= 1):
+                alert_count = data.shape[0] * self.window
+            elif (self.window <= 0) or (self.window > data.shape[0]):
+                raise AngoraException(anomaliesCommand.EXCEPTION_05)
+            else :
+                alert_count = self.window
+            ma = ma.iloc[int(data.shape[0]-alert_count):]
+            data = data.iloc[int(data.shape[0]-alert_count):]
+
         upper = ma + confidence
         lower = ma - confidence
 
@@ -238,12 +293,30 @@ class anomaliesCommand(SimpleCommand):
         data.reset_index(inplace = True)
         data[self.index] = data[self.index].astype(str)
 
-        anomaly = (data['residuals'] > data['upper']) | (data['residuals'] < data['lower'])
+        if self.direct == 'below':
+            anomaly = data['residuals'] < data['lower']
+        elif self.direct == 'above':
+            anomaly = data['residuals'] > data['upper']
+        else:
+            anomaly = (data['residuals'] > data['upper']) | (data['residuals'] < data['lower'])
+
         data.insert(len(data.columns),"anomaly",anomaly)
 
-        df = sqlCtx.createDataFrame(data)
+        if self.detection_sign :
+            data = data.loc[data['anomaly'] == True]
 
-        # print(res_sarimax.summary())
+        try:
+            df = sqlCtx.createDataFrame(data)
+        except:
+            schema = StructType([ 
+                StructField("time", DoubleType(), nullable=False),
+                StructField("value", DoubleType(), nullable=False),
+                StructField("predict", DoubleType(), nullable=False),
+                StructField("residuals", DoubleType(), nullable=False),
+                StructField("upper", DoubleType(), nullable=False),
+                StructField("lower", DoubleType(), nullable=False),
+                StructField("anomaly", DoubleType(), nullable=False),])
+            df = sqlCtx.createDataFrame(data,schema)
 
         return df
 
@@ -269,6 +342,17 @@ class anomaliesCommand(SimpleCommand):
     	all_std = resid.std()
         stddev = all_std/math.sqrt(5)
         confidence = 1.959964 * stddev * float(self.bound)
+        if self.detection_sign :
+            self.window = float(self.window)
+            if (self.window > 0) and (self.window <= 1):
+                alert_count = data.shape[0] * self.window
+            elif (self.window <= 0) or (self.window > data.shape[0]):
+                raise AngoraException(anomaliesCommand.EXCEPTION_05)
+            else :
+                alert_count = self.window
+            ma = ma.iloc[int(data.shape[0]-alert_count):]
+            data = data.iloc[int(data.shape[0]-alert_count):]
+
         upper = ma + confidence
         lower = ma - confidence
 
@@ -278,11 +362,29 @@ class anomaliesCommand(SimpleCommand):
         data.reset_index(inplace = True)
         data[self.index] = data[self.index].astype(str)
 
-        anomaly = (data['residuals'] > data['upper']) | (data['residuals'] < data['lower'])
+        if self.direct == 'below':
+            anomaly = data['residuals'] < data['lower']
+        elif self.direct == 'above':
+            anomaly = data['residuals'] > data['upper']
+        else:
+            anomaly = (data['residuals'] > data['upper']) | (data['residuals'] < data['lower'])
+
         data.insert(len(data.columns),"anomaly",anomaly)
 
-        df = sqlCtx.createDataFrame(data)
-        df.show(df.count())
+        if self.detection_sign :
+            data = data.loc[data['anomaly'] == True]
+
+        try:
+            df = sqlCtx.createDataFrame(data)
+        except:
+            schema = StructType([ 
+                StructField("time", DoubleType(), nullable=False),
+                StructField("value", DoubleType(), nullable=False),
+                StructField("residuals", DoubleType(), nullable=False),
+                StructField("upper", DoubleType(), nullable=False),
+                StructField("lower", DoubleType(), nullable=False),
+                StructField("anomaly", DoubleType(), nullable=False),])
+            df = sqlCtx.createDataFrame(data,schema)
 
     	return df
 
