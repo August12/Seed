@@ -27,7 +27,7 @@ CONVERGENCE: REL_REDUCTION_OF_F_<=_FACTR*EPSMCH
    evaluations in the last line search.  Termination
    may possibly be caused by a bad search direction.
 
- Total User time 3.125E-02 seconds.
+ Total User time 0.000E+00 seconds.
 
 RUNNING THE L-BFGS-B CODE
 
