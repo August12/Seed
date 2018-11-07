@@ -21,9 +21,9 @@ anomalies 따로 Detect 값만 뽑아 낼 수 있는 기능이 있습니다.
 ### C. Parameters
 
 ```
-... | anomalies index target [alg=basic] [bound=2] [by field_name]
+... | anomalies index target [alg=basic] [bound=2] [by=field_name]
 
-... | anomalies index target [alg=basic] [bound=2] [by field_name] [direct=both] 	      								[alert_window=last_60s]
+... | anomalies index target [alg=basic] [bound=2] [by=field_name] [direct=both] 	      								[alert_window=last_60s]
 ```
 
 `index` : 시계열 데이터 필드명 입니다. **반드시** 지정해 줘야 합니다.

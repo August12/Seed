@@ -124,6 +124,7 @@ class anomaliesCommand(SimpleCommand):
         self.bound = 2
         self.index = None
         self.target = None
+        self.by = None
         self.direct = 'both'
         self.alert_window = 'last_60s'
         self.seasonality = 'hourly'
@@ -161,7 +162,7 @@ class anomaliesCommand(SimpleCommand):
             raise AngoraException(anomaliesCommand.EXCEPTION_03)
 
         self.parse_parameter = parsed_args['params']
-        par_list = ['alg', 'bound', 'direct', 'alert_window']
+        par_list = ['alg', 'bound', 'direct', 'alert_window', 'by']
         detect_list = ['direct', 'alert_window', 'seasonality']
 
         if self.parse_parameter != None:
@@ -181,25 +182,13 @@ class anomaliesCommand(SimpleCommand):
     def dfToPandas(self, df) :
         data = df.toPandas()
     	data = data.set_index(self.index)
-        data = data.astype(float)
+        data[self.target].astype(float)
     	data.index = pd.to_datetime(data.index)
     	return data
 
-    def basic(self, sqlCtx, df) :
-    	'''
-    	Detect anomalies using basic argorithm.
-
-    	Args:
-    		df: dataframe.
-    	Returns:
-    		the anomalies dataframe.
-    	Note:
-    		Need revise this algorithm.
-    	'''
-    	data = self.dfToPandas(df)
-
+    def basicAlgorithm(self, sqlCtx, data) :
         time_tri = self.alert_window[len(self.alert_window)-1]
-        self.alert_window = int(self.alert_window[5:len(self.alert_window)-1])
+        alert_window_param = int(self.alert_window[5:len(self.alert_window)-1])
 
         ma = data[self.target].rolling(window=5,min_periods=1).mean()
         all_std = data[self.target].std()
@@ -225,11 +214,11 @@ class anomaliesCommand(SimpleCommand):
 
         if self.detection_sign :
             if time_tri == 's':
-                time_range = timedelta(seconds=self.alert_window)
+                time_range = timedelta(seconds=alert_window_param)
             elif time_tri == 'm':
-                time_range = timedelta(minutes=self.alert_window)
+                time_range = timedelta(minutes=alert_window_param)
             elif time_tri == 'h':
-                time_range = timedelta(hours=self.alert_window)
+                time_range = timedelta(hours=alert_window_param)
             else:
                 raise AngoraException(anomaliesCommand.EXCEPTION_05)
             data = data.loc[data.index[data.index >= (data.index[-1] - time_range)]]
@@ -237,34 +226,49 @@ class anomaliesCommand(SimpleCommand):
         data.reset_index(inplace = True)
         data[self.index] = data[self.index].astype(str)
 
-        try:
-            df = sqlCtx.createDataFrame(data)
-        except:
-            schema = StructType([ 
-                StructField("time", DoubleType(), nullable=False),
-                StructField("value", DoubleType(), nullable=False),
-                StructField("upper", DoubleType(), nullable=False),
-                StructField("lower", DoubleType(), nullable=False),
-                StructField("anomaly", DoubleType(), nullable=False),])
-            df = sqlCtx.createDataFrame(data,schema)
+        return data
 
-        return df
-
-    def agile(self, sqlCtx, df) :
+    def basic(self, sqlCtx, df) :
     	'''
-    	Detect anomailes using SARIMA model
+    	Detect anomalies using basic argorithm.
 
     	Args:
     		df: dataframe.
     	Returns:
-    		The anomailies dataframe.
+    		the anomalies dataframe.
     	Note:
-    		To need compute P,Q,M parameters.
-    		This code has a critical problem. It is that pred_results push one by one.
-    		***median absolute deviation***
+    		Need revise this algorithm.
     	'''
+    	data = self.dfToPandas(df)
 
-        data = self.dfToPandas(df)
+        if self.by != None:
+            group = self.by
+            group_columns = data[group].unique()
+            group_result = []
+            for col in group_columns:
+                data = self.basicAlgorithm(sqlCtx, data[data[group]==col])
+                group_result.append(data)
+
+            result_basic = pd.concat(group_result)
+        else:
+            result_basic = self.basicAlgorithm(sqlCtx, data)
+
+        try:
+            df = sqlCtx.createDataFrame(result_basic)
+        except:
+            schema = StructType([ 
+                StructField("time", DoubleType(), nullable=False),
+                StructField("value", DoubleType(), nullable=False),
+                StructField("host", DoubleType(), nullable=False),
+                StructField("upper", DoubleType(), nullable=False),
+                StructField("lower", DoubleType(), nullable=False),
+                StructField("anomaly", DoubleType(), nullable=False),])
+            df = sqlCtx.createDataFrame(result_basic,schema)
+        return df
+
+    def sarimaAlgorithm(self, sqlCtx, data):
+        time_tri = self.alert_window[len(self.alert_window)-1]
+        alert_window_param = int(self.alert_window[5:len(self.alert_window)-1])
 
         mod_sarimax = sm.tsa.SARIMAX(data, order=(0,1,0),seasonal_order=(0,0,0,0),enforce_stationarity=False)
         res_sarimax = mod_sarimax.fit()
@@ -274,9 +278,6 @@ class anomaliesCommand(SimpleCommand):
 
         pred_differences = data.value-pred_results
         pred_differences = abs(pred_differences)
-
-        time_tri = self.alert_window[len(self.alert_window)-1]
-        self.alert_window = int(self.alert_window[5:len(self.alert_window)-1])
 
         ma = pred_differences.rolling(window=5,min_periods=1).mean()
         all_std = pred_differences.std()
@@ -303,75 +304,96 @@ class anomaliesCommand(SimpleCommand):
 
         if self.detection_sign :
             if time_tri == 's':
-                time_range = timedelta(seconds=self.alert_window)
+                time_range = timedelta(seconds=alert_window_param)
             elif time_tri == 'm':
-                time_range = timedelta(minutes=self.alert_window)
+                time_range = timedelta(minutes=alert_window_param)
             elif time_tri == 'h':
-                time_range = timedelta(hours=self.alert_window)
+                time_range = timedelta(hours=alert_window_param)
             else:
                 raise AngoraException(anomaliesCommand.EXCEPTION_05)
             data = data.loc[data.index[data.index >= (data.index[-1] - time_range)]]
 
         data.reset_index(inplace = True)
         data[self.index] = data[self.index].astype(str)
+        return data
 
-        try:
-            df = sqlCtx.createDataFrame(data)
-        except:
-            schema = StructType([
-                StructField("time", DoubleType(), nullable=False),
-                StructField("value", DoubleType(), nullable=False),
-                StructField("predict", DoubleType(), nullable=False),
-                StructField("residuals", DoubleType(), nullable=False),
-                StructField("upper", DoubleType(), nullable=False),
-                StructField("lower", DoubleType(), nullable=False),
-                StructField("anomaly", DoubleType(), nullable=False),])
-            df = sqlCtx.createDataFrame(data,schema)
-
-        return df
-
-    def robust(self, sqlCtx, df) :
+    def agile(self, sqlCtx, df) :
     	'''
-    	Detect anomailes using Seasonal Trend decomposition
+    	Detect anomailes using SARIMA model
 
     	Args:
     		df: dataframe.
     	Returns:
     		The anomailies dataframe.
     	Note:
-    		
+    		To need compute P,Q,M parameters.
+    		This code has a critical problem. It is that pred_results push one by one.
+    		***median absolute deviation***
     	'''
 
-    	data = self.dfToPandas(df)
-    	result = seasonal_decompose(data,freq=4,model='multiplicative')
-    	resid = result.resid
+        data = self.dfToPandas(df)
 
+        if self.by != None:
+            group = self.by
+            group_columns = data[group].unique()
+            group_result = []
+            for col in group_columns:
+                tmp = data[data[group]==col]
+                tmp = tmp.filter(items=[self.target])
+                tmp = self.sarimaAlgorithm(sqlCtx, tmp)
+                tmp[group] = col
+                group_result.append(tmp)
+            result_agile = pd.concat(group_result)
+        else:
+            tmp = data.filter(items=[self.target])
+            result_agile = self.sarimaAlgorithm(sqlCtx, tmp)
+
+        try:
+            df = sqlCtx.createDataFrame(result_agile)
+        except:
+            schema = StructType([
+                StructField("time", DoubleType(), nullable=False),
+                StructField("value", DoubleType(), nullable=False),
+                StructField("host", DoubleType(), nullable=False),
+                StructField("predict", DoubleType(), nullable=False),
+                StructField("residuals", DoubleType(), nullable=False),
+                StructField("upper", DoubleType(), nullable=False),
+                StructField("lower", DoubleType(), nullable=False),
+                StructField("anomaly", DoubleType(), nullable=False),])
+            df = sqlCtx.createDataFrame(result_agile,schema)
+
+        return df
+
+    def sDecomposAlgorithm(self, sqlCtx, data):
         time_tri = self.alert_window[len(self.alert_window)-1]
-        self.alert_window = int(self.alert_window[5:len(self.alert_window)-1])
+        alert_window_param = int(self.alert_window[5:len(self.alert_window)-1])
 
-    	ma = resid.rolling(window=5,min_periods=1).mean()
-    	all_std = resid.std()
+        result = seasonal_decompose(data,freq=4,model='multiplicative')
+        resid = result.resid
+
+        ma = resid.rolling(window=5,min_periods=1).mean()
+        all_std = resid.std()
         stddev = all_std/math.sqrt(5)
         confidence = 1.959964 * stddev * float(self.bound)
 
         upper = ma + confidence
         lower = ma - confidence
 
-    	data.insert(len(data.columns), "residuals", resid)
-    	data.insert(len(data.columns), "upper", upper)
-    	data.insert(len(data.columns), "lower", lower)
+        data.insert(len(data.columns), "residuals", resid)
+        data.insert(len(data.columns), "upper", upper)
+        data.insert(len(data.columns), "lower", lower)
 
         if self.detection_sign :
             if time_tri == 's':
-                time_range = timedelta(seconds=self.alert_window)
+                time_range = timedelta(seconds=alert_window_param)
             elif time_tri == 'm':
-                time_range = timedelta(minutes=self.alert_window)
+                time_range = timedelta(minutes=alert_window_param)
             elif time_tri == 'h':
-                time_range = timedelta(hours=self.alert_window)
+                time_range = timedelta(hours=alert_window_param)
             else:
                 raise AngoraException(anomaliesCommand.EXCEPTION_05)
             data = data.loc[data.index[data.index >= (data.index[-1] - time_range)]]
-        
+
         data.reset_index(inplace = True)
         data[self.index] = data[self.index].astype(str)
 
@@ -387,8 +409,40 @@ class anomaliesCommand(SimpleCommand):
         if self.detection_sign :
             data = data.loc[data['anomaly'] == True]
 
+        return data
+
+    def robust(self, sqlCtx, df) :
+    	'''
+    	Detect anomailes using Seasonal Trend decomposition
+
+    	Args:
+    		df: dataframe.
+    	Returns:
+    		The anomailies dataframe.
+    	Note:
+    		
+    	'''
+
+    	data = self.dfToPandas(df)
+
+        if self.by != None:
+            group = self.by
+            group_columns = data[group].unique()
+            group_result = []
+            for col in group_columns:
+                tmp = data[data[group]==col]
+                tmp = tmp.filter(items=[self.target])
+                tmp = self.sDecomposAlgorithm(sqlCtx, tmp)
+                tmp[group] = col
+                group_result.append(tmp)
+
+            result_basic = pd.concat(group_result)
+        else:
+            tmp = data.filter(items=[self.target])
+            result_basic = self.sDecomposAlgorithm(sqlCtx, tmp)
+
         try:
-            df = sqlCtx.createDataFrame(data)
+            df = sqlCtx.createDataFrame(result_basic)
         except:
             schema = StructType([ 
                 StructField("time", DoubleType(), nullable=False),
@@ -396,8 +450,9 @@ class anomaliesCommand(SimpleCommand):
                 StructField("residuals", DoubleType(), nullable=False),
                 StructField("upper", DoubleType(), nullable=False),
                 StructField("lower", DoubleType(), nullable=False),
-                StructField("anomaly", DoubleType(), nullable=False),])
-            df = sqlCtx.createDataFrame(data,schema)
+                StructField("anomaly", DoubleType(), nullable=False),
+                StructField(self.by, DoubleType(), nullable=False),])
+            df = sqlCtx.createDataFrame(result_basic,schema)
 
     	return df
 
