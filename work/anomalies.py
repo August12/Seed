@@ -1,7 +1,7 @@
 # coding=UTF-8
 from pyspark.sql import SparkSession
 from pyspark.sql import SQLContext
-from pyspark.sql.types import StructType, StructField, IntegerType, StringType
+from pyspark.sql.types import *
 from angora.cmds.base import SimpleCommand
 from angora.exceptions import AngoraException
 from ply import lex, yacc
@@ -11,6 +11,7 @@ import pandas as pd
 import statsmodels.api as sm
 from statsmodels.tsa.seasonal import seasonal_decompose
 from datetime import timedelta
+import datetime
 import math
 import sys
 
@@ -181,16 +182,17 @@ class anomaliesCommand(SimpleCommand):
 
     def dfToPandas(self, df) :
         data = df.toPandas()
-    	data = data.set_index(self.index)
-        data[self.target].astype(float)
-    	data.index = pd.to_datetime(data.index)
+        data[self.index]  = data[self.index].astype(str)
+        data[self.index]  = pd.to_datetime(data[self.index],format='%Y%m%d%H%M%S')
+        data[self.target] = data[self.target].astype(float)
+        data = data.set_index(self.index)
     	return data
 
     def basicAlgorithm(self, sqlCtx, data) :
         time_tri = self.alert_window[len(self.alert_window)-1]
         alert_window_param = int(self.alert_window[5:len(self.alert_window)-1])
 
-        ma = data[self.target].rolling(window=5,min_periods=1).mean()
+        ma = data[self.target].rolling(window=10,min_periods=1).mean()
         all_std = data[self.target].std()
         stddev = all_std/math.sqrt(5)
         confidence = 1.959964 * stddev * float(self.bound)
@@ -198,8 +200,8 @@ class anomaliesCommand(SimpleCommand):
         upper = ma + confidence
         lower = ma - confidence
 
-        data['upper'] = upper
-        data['lower'] = lower
+        data['upper'] = upper.round(0)
+        data['lower'] = lower.astype(int)
 
         if self.direct   == 'below':
             anomaly = data[self.target] < data['lower']
@@ -223,9 +225,6 @@ class anomaliesCommand(SimpleCommand):
                 raise AngoraException(anomaliesCommand.EXCEPTION_05)
             data = data.loc[data.index[data.index >= (data.index[-1] - time_range)]]
 
-        data.reset_index(inplace = True)
-        data[self.index] = data[self.index].astype(str)
-
         return data
 
     def basic(self, sqlCtx, df) :
@@ -246,24 +245,26 @@ class anomaliesCommand(SimpleCommand):
             group_columns = data[group].unique()
             group_result = []
             for col in group_columns:
-                data = self.basicAlgorithm(sqlCtx, data[data[group]==col])
-                group_result.append(data)
-
+                tmp = self.basicAlgorithm(sqlCtx, data[data[group]==col])
+                group_result.append(tmp)
             result_basic = pd.concat(group_result)
         else:
             result_basic = self.basicAlgorithm(sqlCtx, data)
 
-        try:
-            df = sqlCtx.createDataFrame(result_basic)
-        except:
-            schema = StructType([ 
-                StructField("time", DoubleType(), nullable=False),
-                StructField("value", DoubleType(), nullable=False),
-                StructField("host", DoubleType(), nullable=False),
-                StructField("upper", DoubleType(), nullable=False),
-                StructField("lower", DoubleType(), nullable=False),
-                StructField("anomaly", DoubleType(), nullable=False),])
-            df = sqlCtx.createDataFrame(result_basic,schema)
+        st = []
+        result_basic.reset_index(inplace = True)
+        result_basic[self.index] = result_basic.astype(str)
+        for col in result_basic.columns:
+            if(result_basic[col].dtype == 'float64'):
+                st.append(StructField(col,DoubleType()))
+            elif(result_basic[col].dtype == 'bool'):
+                st.append(StructField(col,BooleanType()))
+            elif(result_basic[col].dtype == 'int64'):
+                st.append(StructField(col,IntegerType()))
+            else:
+                st.append(StructField(col,StringType()))
+        schema = StructType(st)
+        df = sqlCtx.createDataFrame(result_basic, schema)
         return df
 
     def sarimaAlgorithm(self, sqlCtx, data):
@@ -289,8 +290,8 @@ class anomaliesCommand(SimpleCommand):
 
         data['predict']   = pred_results
         data['residuals'] = pred_differences
-        data['upper']     = upper
-        data['lower']     = lower
+        data['upper']     = upper.round(0)
+        data['lower']     = lower.astype(int)
 
         if self.direct   == 'below':
             anomaly = data['residuals'] < data['lower']
@@ -313,8 +314,6 @@ class anomaliesCommand(SimpleCommand):
                 raise AngoraException(anomaliesCommand.EXCEPTION_05)
             data = data.loc[data.index[data.index >= (data.index[-1] - time_range)]]
 
-        data.reset_index(inplace = True)
-        data[self.index] = data[self.index].astype(str)
         return data
 
     def agile(self, sqlCtx, df) :
@@ -348,19 +347,20 @@ class anomaliesCommand(SimpleCommand):
             tmp = data.filter(items=[self.target])
             result_agile = self.sarimaAlgorithm(sqlCtx, tmp)
 
-        try:
-            df = sqlCtx.createDataFrame(result_agile)
-        except:
-            schema = StructType([
-                StructField("time", DoubleType(), nullable=False),
-                StructField("value", DoubleType(), nullable=False),
-                StructField("host", DoubleType(), nullable=False),
-                StructField("predict", DoubleType(), nullable=False),
-                StructField("residuals", DoubleType(), nullable=False),
-                StructField("upper", DoubleType(), nullable=False),
-                StructField("lower", DoubleType(), nullable=False),
-                StructField("anomaly", DoubleType(), nullable=False),])
-            df = sqlCtx.createDataFrame(result_agile,schema)
+        st = []
+        result_agile.reset_index(inplace = True)
+        result_agile[self.index] = result_agile.astype(str)
+        for col in result_agile.columns:
+            if(result_agile[col].dtype == 'float64'):
+                st.append(StructField(col,DoubleType()))
+            elif(result_agile[col].dtype == 'bool'):
+                st.append(StructField(col,BooleanType()))
+            elif(result_agile[col].dtype == 'int64'):
+                st.append(StructField(col,IntegerType()))
+            else:
+                st.append(StructField(col,StringType()))
+        schema = StructType(st)
+        df = sqlCtx.createDataFrame(result_agile, schema)
 
         return df
 
@@ -379,6 +379,8 @@ class anomaliesCommand(SimpleCommand):
         upper = ma + confidence
         lower = ma - confidence
 
+
+
         data.insert(len(data.columns), "residuals", resid)
         data.insert(len(data.columns), "upper", upper)
         data.insert(len(data.columns), "lower", lower)
@@ -393,9 +395,6 @@ class anomaliesCommand(SimpleCommand):
             else:
                 raise AngoraException(anomaliesCommand.EXCEPTION_05)
             data = data.loc[data.index[data.index >= (data.index[-1] - time_range)]]
-
-        data.reset_index(inplace = True)
-        data[self.index] = data[self.index].astype(str)
 
         if self.direct == 'below':
             anomaly = data['residuals'] < data['lower']
@@ -422,7 +421,6 @@ class anomaliesCommand(SimpleCommand):
     	Note:
     		
     	'''
-
     	data = self.dfToPandas(df)
 
         if self.by != None:
@@ -436,23 +434,25 @@ class anomaliesCommand(SimpleCommand):
                 tmp[group] = col
                 group_result.append(tmp)
 
-            result_basic = pd.concat(group_result)
+            result_robust = pd.concat(group_result)
         else:
             tmp = data.filter(items=[self.target])
-            result_basic = self.sDecomposAlgorithm(sqlCtx, tmp)
+            result_robust = self.sDecomposAlgorithm(sqlCtx, tmp)
 
-        try:
-            df = sqlCtx.createDataFrame(result_basic)
-        except:
-            schema = StructType([ 
-                StructField("time", DoubleType(), nullable=False),
-                StructField("value", DoubleType(), nullable=False),
-                StructField("residuals", DoubleType(), nullable=False),
-                StructField("upper", DoubleType(), nullable=False),
-                StructField("lower", DoubleType(), nullable=False),
-                StructField("anomaly", DoubleType(), nullable=False),
-                StructField(self.by, DoubleType(), nullable=False),])
-            df = sqlCtx.createDataFrame(result_basic,schema)
+        st = []
+        result_robust.reset_index(inplace = True)
+        result_robust[self.index] = result_robust.astype(str)
+        for col in result_robust.columns:
+            if(result_robust[col].dtype == 'float64'):
+                st.append(StructField(col,DoubleType()))
+            elif(result_robust[col].dtype == 'bool'):
+                st.append(StructField(col,BooleanType()))
+            elif(result_robust[col].dtype == 'int64'):
+                st.append(StructField(col,IntegerType()))
+            else:
+                st.append(StructField(col,StringType()))
+        schema = StructType(st)
+        df = sqlCtx.createDataFrame(result_robust, schema)
 
     	return df
 

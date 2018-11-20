@@ -48,6 +48,10 @@ class anomaliesTests(unittest.TestCase):
                 ]
 
         cls.test_df = anomaliesTests.sqlCtx.createDataFrame(data,['time','host','value'])
+        cls.test_df2 = anomaliesTests.sqlCtx.read.format('csv') \
+                                               .option("header", "true") \
+                                               .option("inferschema", "true") \
+                                               .load("plaform2_DATE_CNT.csv")
 
     def command_excute(self, cond):
         command = anomaliesCommand()
@@ -61,8 +65,7 @@ class anomaliesTests(unittest.TestCase):
         result = self.command_excute("time value")
         for i in range(len(result)) :
             rows.append([result[i]['time'],result[i]['value'],result[i]['upper'],result[i]['lower'],result[i]['anomaly']])
-        print rows
-        answer = [[u'2018-10-29 19:22:40', 300.0, 232.60939607918948, 27.390603920810506, True]]
+        answer = [[u'2018-10-29 19:22:40', 300.0, 200.0, -5, True]]
         self.assertEqual(rows, answer)
 
     def test_case2(self):
@@ -70,9 +73,8 @@ class anomaliesTests(unittest.TestCase):
         result = self.command_excute("time value alg=agile")
         for i in range(len(result)) :
             rows.append([result[i]['time'],result[i]['value'],result[i]['predict'],result[i]['residuals'],result[i]['upper'],result[i]['lower'],result[i]['anomaly']])
-        print rows
-        answer = [[u'2018-10-29 19:22:40', 300.0, 95.0, 205.0, 138.57237123194113, -48.57237123194115, True],
-                  [u'2018-10-29 19:22:50', 105.0, 300.0, 195.0, 176.57237123194113, -10.572371231941148, True]]
+        answer = [[u'2018-10-29 19:22:40', 300.0, 95.0, 205.0, 139.0, -48, True],
+                  [u'2018-10-29 19:22:50', 105.0, 300.0, 195.0, 177.0, -10, True]]
         self.assertEqual(rows, answer)
 
     def test_case3(self):
@@ -80,11 +82,10 @@ class anomaliesTests(unittest.TestCase):
         result = self.command_excute("time value alg=agile bound=1")
         for i in range(len(result)) :
             rows.append([result[i]['time'],result[i]['value'],result[i]['predict'],result[i]['residuals'],result[i]['upper'],result[i]['lower'],result[i]['anomaly']])
-        print rows
-        answer = [[u'2018-10-29 19:22:40', 300.0, 95.0, 205.0, 91.78618561597057, -1.7861856159705738, True],
-                  [u'2018-10-29 19:22:50', 105.0, 300.0, 195.0, 129.78618561597057, 36.213814384029426, True],
-                  [u'2018-10-29 19:24:00', 40.0, 135.0, 95.0, 69.78618561597057, -23.786185615970574, True],
-                  [u'2018-10-29 19:24:10', 145.0, 40.0, 105.0, 89.78618561597057, -3.786185615970574, True]]
+        answer = [[u'2018-10-29 19:22:40', 300.0, 95.0, 205.0, 92.0, -1, True],
+                  [u'2018-10-29 19:22:50', 105.0, 300.0, 195.0, 130.0, 36, True],
+                  [u'2018-10-29 19:24:00', 40.0, 135.0, 95.0, 70.0, -23, True],
+                  [u'2018-10-29 19:24:10', 145.0, 40.0, 105.0, 90.0, -3, True]]
         self.assertEqual(rows, answer)
 
     def test_case4(self):
@@ -92,7 +93,6 @@ class anomaliesTests(unittest.TestCase):
         result = self.command_excute("time value bound=2 alg=robust")
         for i in range(len(result)) :
             rows.append([result[i]['time'],result[i]['value'],result[i]['residuals'],result[i]['upper'],result[i]['lower'],result[i]['anomaly']])
-        print rows
         answer = [[u'2018-10-29 19:22:40', 300.0, 1.8870128974151237, 1.517469442692368, 0.6097573007589749, True],
                   [u'2018-10-29 19:24:00', 40.0, 0.3281761560721954, 1.3884586494232134, 0.4807465074898201, True]]
         self.assertEqual(rows, answer)
@@ -102,7 +102,6 @@ class anomaliesTests(unittest.TestCase):
         result = self.command_excute("time value bound=2 alg=robust direct=below")
         for i in range(len(result)) :
             rows.append([result[i]['time'],result[i]['value'],result[i]['residuals'],result[i]['upper'],result[i]['lower'],result[i]['anomaly']])
-        print rows
         answer = [[u'2018-10-29 19:24:00', 40.0, 0.3281761560721954, 1.3884586494232134, 0.4807465074898201, True]]
         self.assertEqual(rows, answer)
 
@@ -111,7 +110,6 @@ class anomaliesTests(unittest.TestCase):
         result = self.command_excute("time value alert_window=last_60s")
         for i in range(len(result)) :
             rows.append([result[i]['time'],result[i]['value'],result[i]['upper'],result[i]['lower'],result[i]['anomaly']])
-        print rows
         answer = []
         self.assertEqual(rows, answer)
 
@@ -120,8 +118,7 @@ class anomaliesTests(unittest.TestCase):
         result = self.command_excute("time value alg=agile alert_window=last_2m")
         for i in range(len(result)) :
             rows.append([result[i]['time'],result[i]['value'],result[i]['predict'],result[i]['residuals'],result[i]['upper'],result[i]['lower'],result[i]['anomaly']])
-        print rows
-        answer = [[u'2018-10-29 19:22:50', 105.0, 300.0, 195.0, 176.57237123194113, -10.572371231941148, True]]
+        answer = [[u'2018-10-29 19:22:50', 105.0, 300.0, 195.0, 177.0, -10, True]]
         self.assertEqual(rows, answer)
 
     def test_case8(self):
@@ -129,7 +126,6 @@ class anomaliesTests(unittest.TestCase):
         result = self.command_excute("time value bound=2 alg=robust window=0.1 alert_window=last_1h")
         for i in range(len(result)) :
             rows.append([result[i]['time'],result[i]['value'],result[i]['residuals'],result[i]['upper'],result[i]['lower'],result[i]['anomaly']])
-        print rows
         answer = [[u'2018-10-29 19:22:40', 300.0, 1.8870128974151237, 1.517469442692368, 0.6097573007589749, True],
                   [u'2018-10-29 19:24:00', 40.0, 0.3281761560721954, 1.3884586494232134, 0.4807465074898201, True]]
         self.assertEqual(rows, answer)
@@ -139,7 +135,8 @@ class anomaliesTests(unittest.TestCase):
         result = self.command_excute("time value by=host")
         for i in range(len(result)) :
             rows.append([result[i]['time'],result[i]['value'],result[i]['host'],result[i]['upper'],result[i]['lower'],result[i]['anomaly']])
-        answer = [[u'2018-10-29 19:22:40', 300, u'mac', 236.26848321180375, 23.73151678819623, True]]
+        answer = [[u'2018-10-29 19:22:40', 300.0, u'mac', 204.0, -8, True],
+                  [u'2018-10-29 19:24:00', 40.0, u'mac2', 171.0, 50, True]]
         self.assertEqual(rows, answer)
 
     def test_case10(self):
@@ -147,10 +144,10 @@ class anomaliesTests(unittest.TestCase):
         result = self.command_excute("time value alg=agile by=host bound=1")
         for i in range(len(result)) :
             rows.append([result[i]['time'],result[i]['value'],result[i]['upper'],result[i]['lower'],result[i]['anomaly'],result[i]['host']])
-        answer = [[u'2018-10-29 19:22:40', 300, 98.7521512703116, -8.752151270311607, True, u'mac'],
-                  [u'2018-10-29 19:22:50', 105, 136.7521512703116, 29.247848729688393, True, u'mac'],
-                  [u'2018-10-29 19:24:00', 40, 64.1295368550254, -18.1295368550254, True, u'mac2'],
-                  [u'2018-10-29 19:24:10', 145, 84.1295368550254, 1.8704631449746003, True, u'mac2']]
+        answer = [[u'2018-10-29 19:22:40', 300.0, 99.0, -8, True, u'mac'],
+                  [u'2018-10-29 19:22:50', 105.0, 137.0, 29, True, u'mac'],
+                  [u'2018-10-29 19:24:00', 40.0, 64.0, -18, True, u'mac2'],
+                  [u'2018-10-29 19:24:10', 145.0, 84.0, 1, True, u'mac2']]
         self.assertEqual(rows, answer)
 
     def test_case11(self):
@@ -158,9 +155,16 @@ class anomaliesTests(unittest.TestCase):
         result = self.command_excute("time value bound=2 alg=robust window=0.1 alert_window=last_1h by=host")
         for i in range(len(result)) :
             rows.append([result[i]['time'],result[i]['value'],result[i]['residuals'],result[i]['upper'],result[i]['lower'],result[i]['anomaly'],result[i]['host']])
-        print rows
         answer = [[u'2018-10-29 19:22:40', 300, 1.6437781109445275, 1.3969409928870533, 0.6350018970863068, True, u'mac']]
         self.assertEqual(rows, answer)
+
+    # def test_case12(self):
+    #     rows = []
+    #     result = self.command_excute("DATETIME_10M CNT alg=basic")
+    #     for i in range(len(result)) :
+    #         rows.append([result[i]['DATETIME_10M'],result[i]['CNT'],result[i]['upper'],result[i]['lower'],result[i]['anomaly']])
+    #     answer = [[u'2018-10-29 19:22:40', 300, 1.6437781109445275, 1.3969409928870533, 0.6350018970863068, True, u'mac']]
+    #     self.assertEqual(rows, answer)
 
 if __name__ == "__main__":
     unittest.main()
