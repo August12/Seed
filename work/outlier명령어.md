@@ -19,18 +19,26 @@ Input으로 받은 Dataframe에 선택한 이상탐지 알고리즘으로 특정
 ### C. Parameters
 
 ```
-... | outlier target [alg=dbscan] [tolerance=0.3] [by=field_name]
+... | outlier target by=field_name [alg=dbscan] [tolerance=0.3]
 
-... | outlier target [alg=mad] [tolerance=0.3] [by=field_name] [pct=0.1]
+... | outlier target by=field_name [alg=mad] [tolerance=1]  [pct=0.1]
 ```
 
 `target` : 분석할 데이터 필드명 입니다. **반드시** 지정해 줘야 합니다.
 
 `alg` : **dbscan**,**mad**. 밀도기반 클러스리터링 알고리즘과 중앙값 편차를 이용하여 비정상적인 그룹을 찾아냅니다.
 
-`tolerance` : 임계값 범위의 scale을 지정합니다. 위의 수식에 값의 범위를 늘리는 데 사용 합니다. 기본값 = 2.
+`tolerance` : 임계값 범위의 scale을 지정합니다. 위의 수식에 값의 범위를 늘리는 데 사용 합니다. 기본값 = 1.
 
-`by` : 그룹으로 각각의 비정상그룹을 탐지할 수 있습니다. 기본값 = None
+`pct` : 이상하다고 판단하는 갯수의 임계값 입니다. 0.1은 10퍼센트, 0<pct<1
+
+`by` : 그룹으로 각각의 비정상그룹을 탐지할 수 있습니다. **반드시** 지정해줘야합니다.
+
+원본 값은 변경하지 말고, 추가 데이터는 신규 필드 생성.
+
+
+
+<br/>
 
 ### D. Examples
 

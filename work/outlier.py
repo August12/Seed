@@ -17,6 +17,8 @@ class outlierCommand(SimpleCommand):
     SUPPORT_MODE = ["dbscan", "mad"]
     EXCEPTION_01 = "We only support one of " + str(SUPPORT_MODE) + " outlier algorithm."
     EXCEPTION_05 = "The mad algorithm not need pct parameter."
+    EXCEPTION_06 = "by=??? need a group columns"
+    EXCEPTION_07 = "pct value must lower than 1 or moust upper than 0"
     
     class outlierLexer(object):
 
@@ -163,6 +165,12 @@ class outlierCommand(SimpleCommand):
             if "pct" in self.parse_parameter:
                 raise AngoraException(outlierCommand.EXCEPTION_05)
 
+        if self.by == None:
+            raise AngoraException(outlierCommand.EXCEPTION_06)
+
+        if self.pct > 1 or self.pct <=0:
+            raise AngoraException(outlierCommand.EXCEPTION_07)
+
     def dbscan(self, sqlCtx, df) :
     	'''
     	Detect outlier using basic argorithm.
@@ -178,12 +186,16 @@ class outlierCommand(SimpleCommand):
         X = pd.DataFrame(data[self.target])
         X = StandardScaler().fit_transform(X)
 
+        # 밀도기반 클러스터링 모델을 생성합니다.
         model = DBSCAN().fit(X)
         predict = model.fit_predict(X)
         data['label'] = predict
         data['outlier'] = False
         cluster = data['label'].unique()
         
+        # 군집화된 클러스터에서 검출된 host가 만약 1개라면
+        # 그 호스트는 모두 아웃라이어입니다.
+        # 이상한 호스트가 아닌 이상 군집화 클러스터에 여러 호스트가 함께 존재해야합니다.
         result= []
         for label in cluster:
             tmp = data[data['label']==label]
@@ -212,24 +224,30 @@ class outlierCommand(SimpleCommand):
     def mad(self, sqlCtx, df):
         data = df.toPandas()
         X = pd.DataFrame(data[self.target])
-        X = StandardScaler().fit_transform(X)
-        data[self.target] = X
         data['outlier'] = False
 
+        # 들어오는 호스트별로 각각의 mad(중앙값 절대 편차)를 계산합니다.
+        # 중앙값 절대 편차를 넘어서는 값을 이상 값으로 간주합니다.
+        # 이상값이 전체 데이터*pct 갯수 만큼 검출될 시 host를 이상하다고 판단합니다.
         group_columns = data[self.by].unique()
         result = []
         for group in group_columns:
             tmp = data[data[self.by]==group]
             median = tmp[self.target].median()
-            tmp['diff'] = abs(tmp[self.target] - median)
-            tmp['threshold'] = [True if x > self.tolerance else False for x in tmp['diff']]
-            count = len(tmp[tmp['threshold']==True])
+            mad = abs(tmp[self.target] - median).median()
+            confidence = 1.959964 * mad * float(self.tolerance)
+            tmp['upper'] = tmp[self.target] + confidence
+            tmp['lower'] = tmp[self.target] - confidence
+            tmp['anomaly'] = (tmp[self.target] > tmp['upper']) | (tmp[self.target] < tmp['lower'])
+
+            count = len(tmp[tmp['anomaly']==True])
             if count > len(tmp)*self.pct:
                 tmp['outlier'] = True
             else:
                 tmp['outlier'] = False
             result.append(tmp)
         data = pd.concat(result)
+        data = data.round({'lower':2,'upper':2})
         data = data.astype(str)
         st=[]
         for col in data.columns:
@@ -243,6 +261,8 @@ class outlierCommand(SimpleCommand):
                 st.append(StructField(col,StringType()))
         schema = StructType(st)
         df = sqlCtx.createDataFrame(data, schema)
+        df = df.select(df[self.by],df[self.target],df['lower'],df['upper'],df['anomaly'],df['outlier'])
+        df.show()
         return df
 
     def execute(self, sqlCtx, df=None, parsed_args=None, options=None):

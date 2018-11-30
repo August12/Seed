@@ -12,7 +12,9 @@ import statsmodels.api as sm
 from statsmodels.tsa.seasonal import seasonal_decompose
 from datetime import timedelta
 from pyspark.ml.regression import LinearRegression
-from pyspark.ml.linalg import Vectors
+from pyspark.mllib.linalg import Vectors
+from pyspark.ml.feature import VectorAssembler
+import pyspark.sql.functions as f
 import math
 import sys
 
@@ -123,13 +125,14 @@ class forecastsCommand(SimpleCommand):
         self.parser = forecastsCommand.forecastsParser().build(write_tables=False, debug=False)
         
         self.alg = 'linear'
-        self.deviation = 2
+        self.trand = 'n'
+        self.deviation = 1
         self.index = None
         self.target = None
         self.by = None
         self.direct = 'both'
         self.alert_window = 'last_60s'
-        self.seasonality = 'hourly'
+        self.seasonality = 'houly'
         self.parse_parameter = []
         self.detection_sign = False
 
@@ -175,6 +178,13 @@ class forecastsCommand(SimpleCommand):
                 except:
                     pass
 
+        if self.seasonality == 'monthly':
+            self.seasonality = 12
+        elif self.seasonality == 'weekly':
+            self.seasonality = 7
+        else:
+            self.seasonality = 24
+
     def dfToPandas(self, df) :
         data = df.toPandas()
         data[self.index]  = data[self.index].astype(str)
@@ -184,78 +194,139 @@ class forecastsCommand(SimpleCommand):
         return data
 
     def linear(self, sqlCtx, df):
+        '''
+        Forecasts using linear regression model
+
+        Args:
+            df: dataframe.
+        Returns:
+            The forecasts dataframe.
+            
+        '''
+        data = df.toPandas()
+        data[self.index]  = pd.to_datetime(data[self.index],format='%Y%m%d%H%M%S')
+        data = data.sort_values(by=[self.index])
+
+        count_index = []
+        for i in range(len(data)):
+            count_index.append(i)
+        data.insert(0,'index',count_index)
+
+        data['forecasts'] = False
+
+        last_data = data['index'].iloc[-1]
+        interval = data['index'].iloc[1] - data['index'].iloc[0]
+        new_features = []
+        tmp = last_data + interval
+        for i in range(len(data)):
+            new_features.append(tmp)
+            tmp = tmp + interval
+
+        new_time = []
+        last_data = data[self.index].iloc[-1]
+        interval = data[self.index].iloc[1] - data[self.index].iloc[0]
+        tmp = last_data + interval
+        for i in range(len(data)):
+            new_time.append(tmp)
+            tmp = tmp + interval
+
+        test = data
+        test = test.drop(['index',self.target],axis=1)
+        test['forecasts'] = True
+        test.insert(0, "index", new_features)
+
+        test = test.drop([self.index],axis=1)
+        test.insert(1, self.index, new_time)
+        data[self.index]  = data[self.index].astype(str)
+        test[self.index]  = test[self.index].astype(str)
         
-        lr = LinearRegression(maxIter=10, regParam=0.3, elasticNetParam=0.8,featuresCol='time',labelCol='value')
+        df = sqlCtx.createDataFrame(data)
+        p_df = sqlCtx.createDataFrame(test)
+        assembler = VectorAssembler(inputCols=['index'], outputCol='features')
+        df = assembler.transform(df)
+        p_df = assembler.transform(p_df)
+
+        # 선형회귀 모델을 생성합니다.
+        # maxIter : 최적화 알고리즘의 최대 수행 횟수입니다.
+        # regParam : 정규호 파라미터입니다. 예측에서는 크게 변경 가능성이 없습니다.
+        # labelCol : 학습을 진행할 정답 열을 지정해줍니다.
+        lr = LinearRegression(maxIter=100,regParam=0.1,featuresCol='features',labelCol=self.target)
         lrModel = lr.fit(df)
-        testData = pd.to_datetime([20181029192500,20181029192510,20181029192520,20181029192530])
-        predictions = model.transform(testData)
-        print predictions
 
+        prediction = lrModel.transform(p_df)
+        prediction = prediction.select(prediction['index'],prediction[self.index],prediction['prediction'],prediction['forecasts'])
 
-    def sarimaAlgorithm(self, sqlCtx, data):
-        time_tri = self.alert_window[len(self.alert_window)-1]
-        alert_window_param = int(self.alert_window[5:len(self.alert_window)-1])
+        # 원본 데이터와 예측 데이터를 합치기 위해서 열의 이름을 똑같이 바꿔줍니다.
+        prediction = prediction.selectExpr("index as index",self.index+" as "+self.index, "prediction as "+self.target, "forecasts as forecasts")
+        
+        df = df.select(df['index'],df[self.index],df[self.target],df['forecasts'])
 
-        mod_sarimax = sm.tsa.SARIMAX(data.values, order=(0,1,0),seasonal_order=(0,0,0,12))
-        res_sarimax = mod_sarimax.fit()
-
-        N = len(data)
-        test = pd.to_datetime([20181029192500,20181029192510,20181029192520,20181029192530])
-        pred_results = res_sarimax.predict(start=test[0],end=test[-1])
-
-        print pred_results
-
-        data.reset_index(inplace = True)
-        data[self.index] = data[self.index].astype(str)
-        return data
+        result = df.union(prediction)
+        
+        return result
 
     def seasonal(self, sqlCtx, df) :
     	'''
-    	Detect anomailes using SARIMA model
+    	Forecasts using SARIMA model
 
     	Args:
     		df: dataframe.
     	Returns:
-    		The anomailies dataframe.
+    		The forecasts dataframe.
     	Note:
-    		To need compute P,Q,M parameters.
-    		This code has a critical problem. It is that pred_results push one by one.
-    		***median absolute deviation***
+    		To need compute P,Q,M parameters by yourself.
     	'''
 
         data = self.dfToPandas(df)
+        data = data.sort_values(by=[self.index])
+        data['forecasts'] = False
+        data['lower '+self.target] = 0
+        data['upper '+self.target] = 0
 
-        if self.by != None:
-            group = self.by
-            group_columns = data[group].unique()
-            group_result = []
-            for col in group_columns:
-                tmp = data[data[group]==col]
-                tmp = tmp.filter(items=[self.target])
-                tmp = self.sarimaAlgorithm(sqlCtx, tmp)
-                tmp[group] = col
-                group_result.append(tmp)
-            result_agile = pd.concat(group_result)
-            print result_agile
-        else:
-            tmp = data.filter(items=[self.target])
-            result_agile = self.sarimaAlgorithm(sqlCtx, tmp)
+        # SARIMAX 모델을 생성합니다.
+        # trand : 추세를 고려하는 방법을 설정하는 변수 참조. (https://www.statsmodels.org/dev/generated/statsmodels.tsa.statespace.sarimax.SARIMAX.html)
+        # order : p,d,q - 자동회귀, 통합, 이동평균 계수 설정. (https://www.statsmodels.org/dev/generated/statsmodels.tsa.statespace.sarimax.SARIMAX.html)
+        # seasonal_order : 위와 동일하고 마지막 계절성 파라미터가 추가됩니다. 주기와 관련되 파라미터 설정. (https://www.statsmodels.org/dev/generated/statsmodels.tsa.statespace.sarimax.SARIMAX.html)
+        mod_sarimax = sm.tsa.SARIMAX(data[self.target],trand=self.trand, order=(0,1,0),seasonal_order=(1,1,1,self.seasonality))
+        res_sarimax = mod_sarimax.fit()
 
-        st = []
-        print result_agile.dtypes
-        for col in result_agile.columns:
-            if(result_agile[col].dtype == 'float64'):
-                st.append(StructField(col,DoubleType()))
-            elif(result_agile[col].dtype == 'bool'):
-                st.append(StructField(col,BooleanType()))
-            elif(result_agile[col].dtype == 'int64'):
-                st.append(StructField(col,IntegerType()))
-            else:
-                st.append(StructField(col,StringType()))
-        schema = StructType(st)
-        df = sqlCtx.createDataFrame(result_agile, schema)
+        new_time = []
+        last_data = data.index[-1]
+        interval = data.index[1] - data.index[0]
+        tmp = last_data + interval
+        for i in range(len(data)):
+            new_time.append(tmp)
+            tmp = tmp + interval
 
-        return df
+        test = data
+        test = test.drop([self.target],axis=1)
+        test[self.index] = new_time
+        test['forecasts'] = True
+
+        # sparkdataframe으로 바꾸기 위해서 time index값을 열로 추가.
+        data.reset_index(inplace = True)
+        
+        # N : 예측 데이터 크기.
+        # 생성된 모델을 가지고 예측 값과 예측 값의 신뢰구간을 저장합니다.
+        N = len(data)
+        pred_uc = res_sarimax.get_forecast(steps=N)
+        pred_ci = pred_uc.conf_int()
+        test[self.target] = pred_uc.predicted_mean.values
+        test['lower '+self.target] = pred_ci['lower '+self.target].values*self.deviation
+        test['upper '+self.target] = pred_ci['upper '+self.target].values*self.deviation
+        test = test.round({self.target:2,'lower '+self.target:2,'upper '+self.target:2})
+
+        # spark dataframe으로 바꿀시 datetime의 단위가 이상하게 바뀌므로 string으로 변환합니다.
+        data[self.index]  = data[self.index].astype(str)
+        test[self.index] = test[self.index].astype(str)
+
+        df = sqlCtx.createDataFrame(data)
+        p_df = sqlCtx.createDataFrame(test)
+        df = df.select(df[self.index],df[self.target],df['lower '+self.target],df['upper '+self.target],df['forecasts'])
+        p_df = p_df.select(p_df[self.index],p_df[self.target],p_df['lower '+self.target],p_df['upper '+self.target],p_df['forecasts'])
+        result = df.union(p_df)
+
+        return result
 
     def execute(self, sqlCtx, df=None, parsed_args=None, options=None):
         '''앞서 생성한 함수를 input data frame 에 적용합니다.

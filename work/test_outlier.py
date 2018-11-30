@@ -93,7 +93,7 @@ class outlierTests(unittest.TestCase):
 
     def test_case2(self):
         rows = []
-        result = self.command_excute("value alg=mad by=host tolerance=0.5 pct=0.1")
+        result = self.command_excute("value alg=mad by=host tolerance=1 pct=0.1")
         for i in range(len(result)) :
             rows.append([result[i]['DATETIME_10M'],result[i]['time'],result[i]['host'],result[i]['value'],result[i]['outlier']])
         answer = []
