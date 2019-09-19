@@ -10,7 +10,7 @@ int minsum, maxsum;
 vector < int > oper;
 int num[MAX], visit[MAX];
 int sz;
-
+/*
 void dfs(int sum, int numidx, int depth) {
 
 	if(depth == N) {
@@ -61,10 +61,11 @@ void dfs(int sum, int numidx, int depth) {
 		}
 	}
 }
-
+*/
 int main(void) {
 	
 	scanf("%d", &T);
+	/*
 	for(int tc=1; tc<=T; tc++) {
 
 		scanf("%d", &N);
@@ -94,6 +95,6 @@ int main(void) {
 		dfs(num[0],1,1);
 
 		printf("#%d %d\n", tc, maxsum - minsum);
-		
-	}
+	
+	}*/
 }
